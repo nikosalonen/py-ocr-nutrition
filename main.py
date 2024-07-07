@@ -1,163 +1,184 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-from PIL import ImageGrab
+import sys
+from PyQt6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QLabel,
+    QMessageBox,
+    QHBoxLayout,
+)
+from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtGui import QPainter, QColor, QScreen
 import pyautogui
-
 import easyocr
 import re
 
 
 def process_screenshot(image_path):
-    # Create a reader
-    reader = easyocr.Reader(['en'])
-
-    # Perform OCR on the image
+    reader = easyocr.Reader(["en"])
     result = reader.readtext(image_path, detail=0)
-    text = ' '.join(result)
+    text = " ".join(result)
 
-    # Information Extraction and Structuring
+    # Debug: Print the extracted text
+    print("Extracted text:")
+    print(text)
+
     nutrition_data = {}
-
-    # Look for common nutrition label items
     patterns = {
-        'calories': r'calories[:\s]+(\d+)',
-        'fat': r'total fat[:\s]+(\d+)g',
-        'carbohydrates': r'total carbohydrate[:\s]+(\d+)g',
-        'protein': r'protein[:\s]+(\d+)g',
+        "calories": r"(?:calories|energy)[:\s]+(?:(\d+)(?:\s*kcal)?[,\s/]*(?:\d+\s*kJ)?|(\d+)\s*kJ[,\s/]*(\d+)\s*kcal)",
+        "fat": r"(?:total\s+)?fat[:\s]+(\d+(?:\.\d+)?)g",
+        "carbohydrates": r"(?:total\s+)?carbohydrates?[:\s]+(\d+(?:\.\d+)?)g",
+        "protein": r"protein[:\s]+(\d+(?:\.\d+)?)g",
+        "sodium": r"(?:sodium|salt)[:\s]+(\d+(?:\.\d+)?)mg",
     }
 
     for key, pattern in patterns.items():
         match = re.search(pattern, text.lower())
         if match:
+            if key == "calories":
+                kcal_value = match.group(1) or match.group(3)
+                kj_value = match.group(2)
+                if kcal_value:
+                    nutrition_data[key] = f"{kcal_value} kcal"
+                elif kj_value:
+                    nutrition_data[key] = f"{kj_value} kJ"
             nutrition_data[key] = match.group(1)
+        else:
+            # Debug: Print when a pattern doesn't match
+            print(f"No match found for {key}")
+
+    # Debug: Print the extracted nutrition data
+    print("Extracted nutrition data:")
+    print(nutrition_data)
 
     return nutrition_data
 
-class ScreenReaderApp:
-    def __init__(self, master):
-        self.master = master
-        master.title("Screen Reader")
-        master.attributes('-alpha', 0.3)  # Set window transparency
-        master.attributes('-topmost', True)  # Keep window on top
 
-        self.screen_width = master.winfo_screenwidth()
-        self.screen_height = master.winfo_screenheight()
-
-        # Set initial size and position
-        self.hole_size = 200
-        self.x = (self.screen_width - self.hole_size) // 2
-        self.y = (self.screen_height - self.hole_size) // 2
-
-        # Create canvas
-        self.canvas = tk.Canvas(master, highlightthickness=0, cursor="arrow")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-
-        # Create the "hole"
-        self.hole = self.canvas.create_rectangle(self.x, self.y, self.x + self.hole_size, self.y + self.hole_size,
-                                                 fill='', outline='red', width=2)
-
-        # Create the mask
-        self.mask = self.canvas.create_rectangle(0, 0, self.screen_width, self.screen_height,
-                                                 fill='gray', stipple='gray50')
-        self.canvas.tag_raise(self.hole, self.mask)
-
-        # Bind events
-        self.canvas.bind('<Configure>', self.on_resize)
-        self.canvas.bind('<Motion>', self.on_motion)
-        self.canvas.bind('<B1-Motion>', self.on_drag)
-        self.canvas.bind('<ButtonPress-1>', self.on_press)
-        self.canvas.bind('<ButtonRelease-1>', self.on_release)
-
-        # Capture button
-        self.capture_button = ttk.Button(master, text="Capture", command=self.capture_screen)
-        self.capture_button.place(relx=1, rely=1, anchor='se')
-
-        # Close button
-        self.close_button = ttk.Button(master, text="Close", command=self.confirm_close)
-        self.close_button.place(relx=1, rely=0, anchor='ne')
-
-        # Result text
-        self.result_text = tk.Text(master, height=3, width=30)
-        self.result_text.place(relx=0, rely=1, anchor='sw')
-
+class ScreenReaderApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+        self.selection_rect = QRect()
         self.dragging = False
-        self.resizing = False
+        self.background = None
 
-    def on_resize(self, event):
-        # Update the mask size
-        self.canvas.coords(self.mask, 0, 0, event.width, event.height)
+    def initUI(self):
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        screen = QApplication.primaryScreen().size()
+        self.setGeometry(0, 0, screen.width(), screen.height())
+        self.setWindowTitle("Screen Reader")
 
-    def on_motion(self, event):
-        x1, y1, x2, y2 = self.canvas.coords(self.hole)
-        if abs(event.x - x2) < 10 and abs(event.y - y2) < 10:
-            self.canvas.config(cursor="sizing")
-        else:
-            self.canvas.config(cursor="arrow")
+        # Create a central widget for controls
+        self.control_widget = QWidget(self)
+        self.control_widget.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
+        control_layout = QVBoxLayout(self.control_widget)
 
-    def on_press(self, event):
-        x1, y1, x2, y2 = self.canvas.coords(self.hole)
-        # Check if click is near the edge of the hole
-        if abs(event.x - x2) < 10 and abs(event.y - y2) < 10:
-            self.resizing = True
-            self.canvas.config(cursor="sizing")
-        else:
+        self.label = QLabel('Drag to select the screen area and click "Capture"')
+        self.label.setStyleSheet("color: white;")
+        control_layout.addWidget(self.label)
+
+        button_layout = QHBoxLayout()
+        self.capture_button = QPushButton("Capture")
+        self.capture_button.clicked.connect(self.capture_screen)
+        button_layout.addWidget(self.capture_button)
+
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.close_app)
+        button_layout.addWidget(self.close_button)
+
+        control_layout.addLayout(button_layout)
+
+        self.result_text = QTextEdit()
+        self.result_text.setFixedHeight(100)  # Limit the height of the text area
+        control_layout.addWidget(self.result_text)
+
+        # Position the control widget at the bottom of the screen
+        self.control_widget.setGeometry(0, screen.height() - 200, screen.width(), 200)
+
+    def showEvent(self, event):
+        self.background = QApplication.primaryScreen().grabWindow(0).toImage()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawImage(0, 0, self.background)
+
+        # Draw semi-transparent overlay
+        overlay = QColor(0, 0, 0, 100)
+        painter.fillRect(self.rect(), overlay)
+
+        # Draw the "hole"
+        if not self.selection_rect.isEmpty():
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.fillRect(self.selection_rect, Qt.GlobalColor.transparent)
+
+            # Draw red border around the hole
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOver
+            )
+            pen = painter.pen()
+            pen.setColor(QColor(255, 0, 0))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawRect(self.selection_rect)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = True
-            self.canvas.config(cursor="fleur")
+            self.selection_rect.setTopLeft(event.position().toPoint())
+            self.selection_rect.setBottomRight(event.position().toPoint())
+            self.update()
 
-    def on_drag(self, event):
+    def mouseMoveEvent(self, event):
         if self.dragging:
-            x1, y1, x2, y2 = self.canvas.coords(self.hole)
-            dx = event.x - (x1 + x2) / 2
-            dy = event.y - (y1 + y2) / 2
-            self.canvas.move(self.hole, dx, dy)
-        elif self.resizing:
-            x1, y1, _, _ = self.canvas.coords(self.hole)
-            self.canvas.coords(self.hole, x1, y1, max(x1+10, event.x), max(y1+10, event.y))
+            self.selection_rect.setBottomRight(event.position().toPoint())
+            self.update()
 
-    def on_release(self, event):
-        self.dragging = False
-        self.resizing = False
-        self.canvas.config(cursor="arrow")
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = False
+            self.selection_rect.setBottomRight(event.position().toPoint())
+            self.update()
+
+    def capture_screen(self):
+        x = min(self.selection_rect.left(), self.selection_rect.right())
+        y = min(self.selection_rect.top(), self.selection_rect.bottom())
+        width = abs(self.selection_rect.width())
+        height = abs(self.selection_rect.height())
+
+        screenshot = pyautogui.screenshot(region=(x, y, width, height))
+        screenshot.save("screenshot.png")
+        self.result_text.setPlainText(
+            f"Captured: {x}, {y}, {width}x{height}\nSaved as 'screenshot.png'"
+        )
+        self.process_captured_image()
 
     def process_captured_image(self):
         nutrition_info = process_screenshot("screenshot.png")
+        output = "Extracted Nutrition Information:\n"
+        if nutrition_info:
+            for key, value in nutrition_info.items():
+                output += f"{key.capitalize()}: {value}\n"
+        else:
+            output += "No nutrition information extracted. Please try again with a clearer image."
+        self.result_text.setPlainText(output)
 
-        # Display results
-        self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(tk.END, "Extracted Nutrition Information:\n")
-        for key, value in nutrition_info.items():
-            self.result_text.insert(tk.END, f"{key.capitalize()}: {value}\n")
+    def close_app(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Close",
+            "Are you sure you want to close the application?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.close()
 
-    def capture_screen(self):
-        # Hide the main window
-        self.master.withdraw()
-        self.master.update()
 
-        # Get the hole coordinates relative to the screen
-        x1, y1, x2, y2 = self.canvas.coords(self.hole)
-        screen_x = int(self.master.winfo_x() + x1)
-        screen_y = int(self.master.winfo_y() + y1)
-        capture_width = int(x2 - x1)
-        capture_height = int(y2 - y1)
-
-        # Capture the screen area
-        screenshot = pyautogui.screenshot(region=(screen_x, screen_y, capture_width, capture_height))
-        screenshot.save("screenshot.png")
-
-        # Show the main window again
-        self.master.deiconify()
-
-        self.result_text.delete(1.0, tk.END)
-        self.result_text.insert(tk.END, f"Captured: {screen_x}, {screen_y}, {capture_width}x{capture_height}\n")
-        self.result_text.insert(tk.END, "Saved as 'screenshot.png'")
-
-        self.process_captured_image()
-
-    def confirm_close(self):
-        if messagebox.askyesno("Confirm Close", "Are you sure you want to close the application?"):
-            self.master.quit()
-
-root = tk.Tk()
-root.attributes('-fullscreen', True)
-app = ScreenReaderApp(root)
-root.mainloop()
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    ex = ScreenReaderApp()
+    ex.show()
+    sys.exit(app.exec())
