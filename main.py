@@ -57,22 +57,28 @@ def process_screenshot(image_path):
 
     nutrition_data = {}
     patterns = {
-        "calories/energy": r"(?:calories|energy)[:\s]+(?:(\d+(?:\.\d+)?)(?:\s*kcal)?[,\s/]*(?:\d+(?:\.\d+)?\s*kJ)?|(\d+(?:\.\d+)?)\s*kJ[,\s/]*(\d+(?:\.\d+)?)\s*kcal)",
-        "fat": r"(?:total\s+)?fat[:\s]+(\d+(?:\.\d+)?)\s*g",
-        "carbohydrates": r"(?:total\s+)?carbohydrates?[:\s]+(\d+(?:\.\d+)?)\s*g",
-        "protein": r"protein[:\s]+(\d+(?:\.\d+)?)\s*g",
+        "Energiaa": r"energia(?:, laskennallinen)[:\s]+(?:(\d+(?:\.\d+)?)\s*kJ\s*(?:\((\d+(?:\.\d+)?)\s*kcal\))?|(\d+(?:\.\d+)?)\s*kcal)",
+        "Rasva": r"rasva[:\s]+(\d+(?:\.\d+)?)\s*g",
+        "Hiilihydraatti": r"hiilihydraatit?[:\s]+(\d+(?:\.\d+)?)\s*g",
+        "Proteiini": r"proteiini[:\s]+(\d+(?:\.\d+)?)\s*g",
     }
 
     for key, pattern in patterns.items():
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            if key == "calories/energy":
-                kcal_value = match.group(1) or match.group(3)
-                kj_value = match.group(2)
-                if kcal_value:
-                    nutrition_data[key] = f"{kcal_value} kcal"
+            if key == "Energiaa":
+                kj_value = match.group(1)
+                kcal_value = match.group(2) or match.group(
+                    3
+                )  # kcal could be in group 2 or 3
+                if kj_value and kcal_value:
+                    nutrition_data[key] = f"{kj_value} kJ ({kcal_value} kcal)"
                 elif kj_value:
                     nutrition_data[key] = f"{kj_value} kJ"
+                elif kcal_value:
+                    nutrition_data[key] = f"{kcal_value} kcal"
+                else:
+                    print(f"Unexpected match format for {key}")
             else:
                 nutrition_data[key] = f"{match.group(1)}g"
             print(f"Matched {key}: {match.group(0)}")
